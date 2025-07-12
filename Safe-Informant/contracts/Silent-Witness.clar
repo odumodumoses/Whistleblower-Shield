@@ -14,6 +14,8 @@
 (define-constant ERR-REWARD-ALREADY-CLAIMED (err u108))
 (define-constant ERR-INVALID-EVIDENCE (err u109))
 (define-constant ERR-CASE-CLOSED (err u110))
+(define-constant ERR-INVALID-AMOUNT (err u111))
+(define-constant ERR-INVALID-PRINCIPAL (err u112))
 
 ;; Contract constants
 (define-constant CONTRACT-OWNER tx-sender)
@@ -21,6 +23,7 @@
 (define-constant VOTING-PERIOD u144) ;; ~24 hours in blocks
 (define-constant VERIFICATION-THRESHOLD u3) ;; Minimum votes needed
 (define-constant REWARD-PERCENTAGE u10) ;; 10% of recovery amount
+(define-constant MAX-FUND-AMOUNT u1000000000) ;; Maximum funding amount per transaction
 
 ;; Data variables
 (define-data-var next-report-id uint u1)
@@ -195,6 +198,15 @@
     (>= severity SEVERITY-LOW)
     (<= severity SEVERITY-CRITICAL)))
 
+(define-private (validate-principal (principal-to-check principal))
+  (not (is-eq principal-to-check 'ST000000000000000000002AMW42H)))
+
+(define-private (validate-amount (amount uint))
+  (and (> amount u0) (<= amount MAX-FUND-AMOUNT)))
+
+(define-private (validate-report-id (report-id uint))
+  (and (> report-id u0) (< report-id (var-get next-report-id))))
+
 ;; Public functions
 
 ;; Submit a whistleblower report
@@ -261,6 +273,7 @@
 (define-public (add-evidence (report-id uint) (evidence-hash (buff 64)))
   (let ((report (unwrap! (map-get? reports report-id) ERR-REPORT-NOT-FOUND))
         (evidence-info (unwrap! (map-get? report-evidence report-id) ERR-REPORT-NOT-FOUND)))
+    (asserts! (validate-report-id report-id) ERR-INVALID-REPORT)
     (asserts! (is-eq (get reporter report) tx-sender) ERR-UNAUTHORIZED)
     (asserts! (not (is-eq (get status report) STATUS-CLOSED)) ERR-CASE-CLOSED)
     (asserts! (validate-evidence-hash evidence-hash) ERR-INVALID-EVIDENCE)
@@ -299,6 +312,7 @@
   (let ((report (unwrap! (map-get? reports report-id) ERR-REPORT-NOT-FOUND))
         (verifier-info (unwrap! (map-get? verifiers tx-sender) ERR-UNAUTHORIZED))
         (voting-power (get stake-amount verifier-info)))
+    (asserts! (validate-report-id report-id) ERR-INVALID-REPORT)
     (asserts! (get is-active verifier-info) ERR-UNAUTHORIZED)
     (asserts! (<= block-height (get voting-deadline report)) ERR-VOTING-PERIOD-ENDED)
     (asserts! (is-none (map-get? verifier-votes 
@@ -344,6 +358,8 @@
 ;; Assign case to investigator
 (define-public (assign-case (report-id uint) (case-officer principal))
   (let ((report (unwrap! (map-get? reports report-id) ERR-REPORT-NOT-FOUND)))
+    (asserts! (validate-report-id report-id) ERR-INVALID-REPORT)
+    (asserts! (validate-principal case-officer) ERR-INVALID-PRINCIPAL)
     (asserts! (is-authorized-admin tx-sender) ERR-UNAUTHORIZED)
     (asserts! (is-authorized-investigator case-officer) ERR-UNAUTHORIZED)
     (asserts! (is-eq (get status report) STATUS-VERIFIED) ERR-NOT-VERIFIED)
@@ -363,6 +379,9 @@
   (status (string-ascii 50))
   (notes-hash (buff 64)))
   (let ((case-info (unwrap! (map-get? case-tracking report-id) ERR-REPORT-NOT-FOUND)))
+    (asserts! (validate-report-id report-id) ERR-INVALID-REPORT)
+    (asserts! (> (len status) u0) ERR-INVALID-REPORT)
+    (asserts! (validate-evidence-hash notes-hash) ERR-INVALID-EVIDENCE)
     (asserts! (or (is-eq (get case-officer case-info) tx-sender)
                   (is-authorized-admin tx-sender)) ERR-UNAUTHORIZED)
     
@@ -378,6 +397,8 @@
 ;; Set reward amount for verified report
 (define-public (set-reward-amount (report-id uint) (recovery-amount uint))
   (let ((report (unwrap! (map-get? reports report-id) ERR-REPORT-NOT-FOUND)))
+    (asserts! (validate-report-id report-id) ERR-INVALID-REPORT)
+    (asserts! (validate-amount recovery-amount) ERR-INVALID-AMOUNT)
     (asserts! (is-authorized-admin tx-sender) ERR-UNAUTHORIZED)
     (asserts! (is-eq (get status report) STATUS-VERIFIED) ERR-NOT-VERIFIED)
     
@@ -393,6 +414,7 @@
 ;; Claim reward for verified report
 (define-public (claim-reward (report-id uint))
   (let ((report (unwrap! (map-get? reports report-id) ERR-REPORT-NOT-FOUND)))
+    (asserts! (validate-report-id report-id) ERR-INVALID-REPORT)
     (asserts! (is-eq (get reporter report) tx-sender) ERR-UNAUTHORIZED)
     (asserts! (is-eq (get status report) STATUS-VERIFIED) ERR-NOT-VERIFIED)
     (asserts! (> (get reward-amount report) u0) ERR-INVALID-REPORT)
@@ -417,6 +439,7 @@
 ;; Close case
 (define-public (close-case (report-id uint))
   (let ((report (unwrap! (map-get? reports report-id) ERR-REPORT-NOT-FOUND)))
+    (asserts! (validate-report-id report-id) ERR-INVALID-REPORT)
     (asserts! (is-authorized-admin tx-sender) ERR-UNAUTHORIZED)
     
     (map-set reports report-id
@@ -427,18 +450,21 @@
 ;; Admin functions
 (define-public (add-investigator (investigator principal))
   (begin
+    (asserts! (validate-principal investigator) ERR-INVALID-PRINCIPAL)
     (asserts! (is-authorized-admin tx-sender) ERR-UNAUTHORIZED)
     (map-set authorized-investigators investigator true)
     (ok true)))
 
 (define-public (remove-investigator (investigator principal))
   (begin
+    (asserts! (validate-principal investigator) ERR-INVALID-PRINCIPAL)
     (asserts! (is-authorized-admin tx-sender) ERR-UNAUTHORIZED)
     (map-delete authorized-investigators investigator)
     (ok true)))
 
 (define-public (add-admin (admin principal))
   (begin
+    (asserts! (validate-principal admin) ERR-INVALID-PRINCIPAL)
     (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-UNAUTHORIZED)
     (map-set authorized-admins admin true)
     (ok true)))
@@ -446,6 +472,7 @@
 ;; Fund contract for rewards
 (define-public (fund-contract (amount uint))
   (begin
+    (asserts! (validate-amount amount) ERR-INVALID-AMOUNT)
     (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
     (var-set contract-balance (+ (var-get contract-balance) amount))
     (ok true)))
@@ -453,7 +480,9 @@
 ;; Withdraw verifier stake (admin only for dispute resolution)
 (define-public (withdraw-verifier-stake (verifier principal))
   (let ((verifier-info (unwrap! (map-get? verifiers verifier) ERR-UNAUTHORIZED)))
+    (asserts! (validate-principal verifier) ERR-INVALID-PRINCIPAL)
     (asserts! (is-authorized-admin tx-sender) ERR-UNAUTHORIZED)
+    (asserts! (> (get stake-amount verifier-info) u0) ERR-INVALID-AMOUNT)
     
     (try! (as-contract (stx-transfer? (get stake-amount verifier-info) tx-sender verifier)))
     
